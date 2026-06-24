@@ -16,7 +16,8 @@
 #>
 param(
     [Parameter(Position=0)]
-    [string]$Version = ""
+    [string]$Version = "",
+    [string]$InstallPath = ""
 )
 
 # ── 执行策略自修复 ──
@@ -57,6 +58,7 @@ function Write-Step    { param($Msg) Write-Host "`n━━━ $Msg ━━━`n" -
 
 # ── 版本与路径 ──
 $script:TargetVersion = if ($Version) { $Version } elseif ($env:CC_VERSION) { $env:CC_VERSION } else { "2.1.153" }
+$script:CustomPath = if ($InstallPath) { $InstallPath } elseif ($env:CC_INSTALL_PATH) { $env:CC_INSTALL_PATH } else { "" }
 $GCS_BUCKET = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
 $DOWNLOAD_DIR = "$env:USERPROFILE\.claude\downloads"
 $INSTALL_BASE = "$env:USERPROFILE\.local\share\claude"
@@ -223,6 +225,22 @@ function Main {
     $machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     $env:PATH = "$machinePath;$userPath"
+
+    # ── 选择安装路径 ──
+    $defaultBase = "$env:USERPROFILE\.local"
+    if ($script:CustomPath) {
+        $installBase = $script:CustomPath
+    } else {
+        $inputPath = (Read-Host "  安装路径（留空使用默认: $defaultBase）").Trim()
+        $installBase = if ($inputPath) { $inputPath } else { $defaultBase }
+    }
+    $script:INSTALL_BASE = $installBase
+    $script:VERSIONS_DIR = "$installBase\share\claude\versions"
+    $script:BIN_DIR = "$installBase\bin"
+    $script:LINK_PATH = "$script:BIN_DIR\claude.exe"
+    $script:CONFIG_PATH = "$env:USERPROFILE\.claude.json"
+    Write-Info "安装目标: $installBase"
+    Write-Host ""
 
     # 检测是否已安装
     $found = Find-ClaudeBinary
