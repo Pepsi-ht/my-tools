@@ -178,14 +178,32 @@ function Main {
         Write-Warn "检测到 Claude Code $existingVer 已安装"
         Write-Host "  路径: $($found.Dir)" -ForegroundColor Cyan
         $overwrite = (Read-Host "  是否覆盖安装? [y/N]").Trim()
-        if ($overwrite -notmatch "^[Yy]") {
+        if ($overwrite -match "^[Yy]") {
+            Write-Info "开始覆盖安装 Claude Code $($script:TargetVersion)..."
             Write-Host ""
-            Write-Host "  🤖 Claude Code 已就位！" -ForegroundColor Green
+        } else {
             Write-Host ""
-            return
+            $otherPath = (Read-Host "  是否安装到其他路径? [y/N]").Trim()
+            if ($otherPath -match "^[Yy]") {
+                $inputPath = (Read-Host "  请输入安装路径（留空使用默认: C:\Users\duzijian\.local）").Trim()
+                if ($inputPath) {
+                    $script:CustomPath = $inputPath
+                }
+                Write-Info "将安装 Claude Code $($script:TargetVersion)..."
+                Write-Host ""
+            } else {
+                Write-Host ""
+                Write-Host "  🤖 Claude Code 已就位！" -ForegroundColor Green
+                Write-Host ""
+                return
+            }
         }
-        Write-Info "开始覆盖安装 Claude Code $($script:TargetVersion)..."
-        Write-Host ""
+    }
+
+    # 自定义路径时设置 npm prefix
+    if ($script:CustomPath) {
+        $env:npm_config_prefix = $script:CustomPath
+        Write-Info "npm 安装路径: $script:CustomPath"
     }
 
     # 设置镜像
