@@ -838,14 +838,14 @@ function Step-InstallPnpm {
     }
 }
 
-function Run-PnpmInstall {
-    param([string]$PnpmCmd, [string]$Label = "安装")
+function Run-NpmInstall {
+    param([string]$NpmCmd, [string]$Label = "安装")
 
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = "cmd.exe"
         $pkgSpec = if ($script:OpenClawVersion) { "openclaw@$($script:OpenClawVersion)" } else { "openclaw@latest" }
-        $psi.Arguments = "/c `"$PnpmCmd`" add -g $pkgSpec"
+        $psi.Arguments = "/c `"$NpmCmd`" install -g $pkgSpec 2>&1"
         $psi.UseShellExecute = $false
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
@@ -864,57 +864,48 @@ function Run-PnpmInstall {
         }
 
         $proc = [System.Diagnostics.Process]::Start($psi)
-        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-        $stderrTask = $proc.StandardError.ReadToEndAsync()
     } catch {
         Write-Err "启动${Label}进程失败: $_"
         return @{ Success = $false; Stderr = ""; Stdout = "" }
     }
 
-    $maxWaitSeconds = 300
-    $elapsed = 0
-    $lastLine = ""
+    Write-Host ""
+    Write-Host "  ─── npm 输出 ───" -ForegroundColor Cyan
+    Write-Host ""
+
+    $allStdout = ""
+    $allStderr = ""
     while (-not $proc.HasExited) {
-        Start-Sleep -Seconds 2
-        $elapsed += 2
-        
-        # 读取 stdout/stderr 的最新一行显示真实进度
-        try {
-            $partial = $proc.StandardOutput.ReadLineAsync()
-            $stderrLine = $proc.StandardError.ReadLineAsync()
-        } catch {}
-        
-        $elapsedMin = [math]::Floor($elapsed / 60)
-        $elapsedSec = $elapsed % 60
-        $timeStr = if ($elapsedMin -gt 0) { "${elapsedMin}m${elapsedSec}s" } else { "${elapsedSec}s" }
-        Write-Host "`r  正在安装... (${timeStr})" -NoNewline
-        
-        if ($elapsed -ge $maxWaitSeconds) {
-            Write-Host ""
-            Write-Warn "${Label}超过 ${maxWaitSeconds}s 超时，正在检查进程状态..."
-            if (-not $proc.HasExited) {
-                $proc.Kill()
-                Write-Err "已终止超时的安装进程"
-                return @{ Success = $false; Stderr = "安装超时（${maxWaitSeconds}s）"; Stdout = "" }
+        $line = $proc.StandardOutput.ReadLine()
+        if ($line -ne $null) {
+            $allStdout += $line + "`n"
+            Write-Host "  $line"
+        } else {
+            $stderrLine = $proc.StandardError.ReadLine()
+            if ($stderrLine -ne $null) {
+                $allStderr += $stderrLine + "`n"
+                if ($stderrLine -notmatch "^(npm|WARN|http|sill|verbose|timing)") {
+                    Write-Host "  $stderrLine" -ForegroundColor Yellow
+                }
+            } else {
+                Start-Sleep -Milliseconds 200
             }
-            break
         }
     }
-    Write-Host "`r  安装完成.          "
+    # 读取剩余的输出
+    $remainStdout = $proc.StandardOutput.ReadToEnd()
+    $remainStderr = $proc.StandardError.ReadToEnd()
+    $allStdout += $remainStdout
+    $allStderr += $remainStderr
 
-    $stdout = $stdoutTask.GetAwaiter().GetResult()
-    $stderr = $stderrTask.GetAwaiter().GetResult()
+    Write-Host ""
+    $proc.WaitForExit()
 
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
-    $fullBar = [string]::new([char]0x2588, $width)
     if ($proc.ExitCode -eq 0) {
-        Write-Host "`r  ${Label}进度 [$fullBar] 100%"
-        return @{ Success = $true; Stderr = $stderr; Stdout = $stdout }
+        return @{ Success = $true; Stderr = $allStderr; Stdout = $allStdout }
     }
 
-    Write-Host "`r  ${Label}进度 [$fullBar] 失败"
-    return @{ Success = $false; Stderr = $stderr; Stdout = $stdout; ExitCode = $proc.ExitCode }
+    return @{ Success = $false; Stderr = $allStderr; Stdout = $allStdout; ExitCode = $proc.ExitCode }
 }
 
 function Step-InstallOpenClaw {
@@ -959,7 +950,7 @@ function Step-InstallOpenClaw {
                 Write-Info "已清理 $pnpmGlobalDir"
             }
             try { & $PnpmCmd store prune 2>$null } catch {}
-            $retryResult = Run-PnpmInstall -PnpmCmd $PnpmCmd -Label "重试安装"
+            $retryResult = Run-NpmInstall -NpmCmd $PnpmCmd -Label "重试安装"
             $Result.Value = $retryResult
             return $retryResult.Success
         }
@@ -1056,7 +1047,7 @@ function Step-InstallOpenClaw {
             try {
                 Set-GitMirror $mirror
                 Write-Info "正在使用镜像 $mirror 安装..."
-                $r = Run-PnpmInstall -PnpmCmd $pnpmCmd -Label "安装"
+                $r = Run-NpmInstall -NpmCmd $pnpmCmd -Label "安装"
                 Clear-GitMirror
                 if ($r.Success) { return $r }
                 $rr = $r
@@ -1094,7 +1085,7 @@ function Step-InstallOpenClaw {
 
     # ── 安装 ──
 
-    $result = Run-PnpmInstall -PnpmCmd $pnpmCmd -Label "安装"
+    $result = Run-NpmInstall -NpmCmd $pnpmCmd -Label "安装"
     if ($result.Success) { return (On-InstallSuccess) }
     if (Try-InstallWithCleanup $pnpmCmd ([ref]$result)) { return (On-InstallSuccess) }
 
