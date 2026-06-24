@@ -115,77 +115,32 @@ function Find-ClaudeBinary {
     return $null
 }
 
-# ── 安装核心（npm install）──
+# ── 安装核心（调用 daheiai.com/cc.ps1）──
 function Install-ClaudeCode {
     param([string]$Version)
 
     Write-Step "正在安装 Claude Code v$Version"
 
     try {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = "cmd.exe"
-        $pkgSpec = "@anthropic-ai/claude-code@$Version"
-        $psi.Arguments = "/c npm install -g $pkgSpec 2>&1"
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.RedirectStandardInput = $true
-        $psi.CreateNoWindow = $true
-
-        $proc = [System.Diagnostics.Process]::Start($psi)
+        Write-Info "正在从 daheiai.com 获取安装脚本..."
+        & ([scriptblock]::Create((irm https://daheiai.com/cc.ps1))) $Version
     } catch {
-        Write-Err "启动安装进程失败: $_"
+        Write-Err "安装失败: $_"
         return $false
     }
 
-    Write-Host ""
-    Write-Host "  ─── npm 输出 ───" -ForegroundColor Cyan
-    Write-Host ""
-
-    $allStdout = ""
-    $allStderr = ""
-    $promptHandled = $false
-    while (-not $proc.HasExited) {
-        $line = $proc.StandardOutput.ReadLine()
-        if ($line -ne $null) {
-            $allStdout += $line + "`n"
-            if (-not $promptHandled -and $line -match "Choose which packages to build|space to select") {
-                $proc.StandardInput.WriteLine("a")
-                $promptHandled = $true
-                Write-Host "  [自动选择全部包进行编译] " -ForegroundColor Green
-            }
-            Write-Host "  $line"
-        } else {
-            $stderrLine = $proc.StandardError.ReadLine()
-            if ($stderrLine -ne $null) {
-                $allStderr += $stderrLine + "`n"
-                if ($stderrLine -notmatch "^(npm|WARN|http|sill|verbose|timing)") {
-                    Write-Host "  $stderrLine" -ForegroundColor Yellow
-                }
-            } else {
-                Start-Sleep -Milliseconds 200
-            }
+    # 验证
+    try {
+        $found = (Get-Command claude -ErrorAction SilentlyContinue).Source
+        if (-not $found) {
+            $found = (Get-Command "$env:USERPROFILE\.local\bin\claude.exe" -ErrorAction SilentlyContinue).Source
         }
-    }
-    $remainStdout = $proc.StandardOutput.ReadToEnd()
-    $remainStderr = $proc.StandardError.ReadToEnd()
-    $allStdout += $remainStdout
-    $allStderr += $remainStderr
-
-    Write-Host ""
-    $proc.WaitForExit()
-
-    if ($proc.ExitCode -eq 0) {
-        Write-Ok "Claude Code $Version 安装成功"
-        return $true
-    }
-
-    Write-Err "安装失败 (exit code: $($proc.ExitCode))"
-    if ($allStderr) {
-        $lastErr = $allStderr.Trim().Split("`n")[-1]
-        Write-Host "  最近错误: $lastErr" -ForegroundColor Red
-    }
-    return $false
+        if ($found) {
+            Write-Ok "Claude Code $Version 安装成功"
+            return $true
+        }
+    } catch {}
+    return $true
 }
 
 # ── 主流程 ──
