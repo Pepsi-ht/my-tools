@@ -262,7 +262,13 @@ function Main {
     Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
     Write-Host "  ✅ Claude Code $($script:TargetVersion) 安装完成！" -ForegroundColor Green
     Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
-    Write-Host "  位置: $LINK_PATH" -ForegroundColor Cyan
+    # 显示真实安装路径
+    try {
+        $realPath = (Get-Command claude -ErrorAction SilentlyContinue).Source
+        if ($realPath) {
+            Write-Host "  位置: $realPath" -ForegroundColor Cyan
+        }
+    } catch {}
     Write-Host ""
 }
 
