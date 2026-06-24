@@ -1368,20 +1368,8 @@ function Main {
 
     Refresh-PathEnv
 
-    # ── 选择安装路径 ──
+    # ── 默认路径 ──
     $defaultPnpmHome = Join-Path (Get-LocalAppData) "pnpm"
-    if ($script:CustomPath) {
-        $customHome = $script:CustomPath
-    } else {
-        $inputPath = (Read-Host "  安装路径（留空使用默认: $defaultPnpmHome）").Trim()
-        $customHome = if ($inputPath) { $inputPath } else { "" }
-    }
-    if ($customHome) {
-        $env:PNPM_HOME = $customHome
-        if ($env:PATH -notlike "*$customHome*") { $env:PATH = "$customHome;$env:PATH" }
-        Write-Info "pnpm 全局路径: $customHome"
-        Write-Host ""
-    }
 
     # 检测是否已安装（全面搜索 + Get-Command）
     $existingVer = $null
@@ -1408,18 +1396,41 @@ function Main {
         Write-Warn "检测到 OpenClaw $existingVer 已安装"
         Write-Host "  路径: $($found.Dir)" -ForegroundColor Cyan
         $overwrite = (Read-Host "  是否覆盖安装? [y/N]").Trim()
-        if ($overwrite -notmatch "^[Yy]") {
+        if ($overwrite -match "^[Yy]") {
+            # 覆盖安装到当前 pnpm 路径
+            $customHome = "$env:USERPROFILE\AppData\Local\pnpm"
+            Write-Info "开始覆盖安装 OpenClaw $($script:OpenClawVersion)..."
             Write-Host ""
-            Write-Host "  🦞 你的龙虾已就位！" -ForegroundColor Green
+        } else {
             Write-Host ""
-            $reconfig = (Read-Host "  是否重新配置 OpenClaw? [y/N]").Trim()
-            if ($reconfig -match "^[Yy]") {
-                Step-Onboard | Out-Null
+            $otherPath = (Read-Host "  是否安装到其他路径? [y/N]").Trim()
+            if ($otherPath -match "^[Yy]") {
+                $inputPath = (Read-Host "  请输入安装路径（留空使用默认: $defaultPnpmHome）").Trim()
+                $customHome = if ($inputPath) { $inputPath } else { "" }
+                if ($customHome) {
+                    $env:PNPM_HOME = $customHome
+                    if ($env:PATH -notlike "*$customHome*") { $env:PATH = "$customHome;$env:PATH" }
+                    Write-Info "pnpm 全局路径: $customHome"
+                }
+                Write-Host ""
+            } else {
+                Write-Host ""
+                Write-Host "  🦞 你的龙虾已就位！" -ForegroundColor Green
+                Write-Host ""
+                $reconfig = (Read-Host "  是否重新配置 OpenClaw? [y/N]").Trim()
+                if ($reconfig -match "^[Yy]") {
+                    Step-Onboard | Out-Null
+                }
+                return
             }
-            return
         }
-        Write-Info "开始覆盖安装 OpenClaw $($script:OpenClawVersion)..."
-        Write-Host ""
+    } else {
+        # 未安装，使用默认路径或自定义路径
+        if ($script:CustomPath) {
+            $env:PNPM_HOME = $script:CustomPath
+            if ($env:PATH -notlike "*$script:CustomPath*") { $env:PATH = "$script:CustomPath;$env:PATH" }
+            Write-Info "pnpm 全局路径: $script:CustomPath"
+        }
     }
 
     if (-not (Step-CheckNode))       { Write-Host "`n按任意键退出..."; $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown"); return }

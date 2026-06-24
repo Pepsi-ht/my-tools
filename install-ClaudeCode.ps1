@@ -226,21 +226,8 @@ function Main {
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     $env:PATH = "$machinePath;$userPath"
 
-    # ── 选择安装路径 ──
+    # ── 默认路径 ──
     $defaultBase = "$env:USERPROFILE\.local"
-    if ($script:CustomPath) {
-        $installBase = $script:CustomPath
-    } else {
-        $inputPath = (Read-Host "  安装路径（留空使用默认: $defaultBase）").Trim()
-        $installBase = if ($inputPath) { $inputPath } else { $defaultBase }
-    }
-    $script:INSTALL_BASE = $installBase
-    $script:VERSIONS_DIR = "$installBase\share\claude\versions"
-    $script:BIN_DIR = "$installBase\bin"
-    $script:LINK_PATH = "$script:BIN_DIR\claude.exe"
-    $script:CONFIG_PATH = "$env:USERPROFILE\.claude.json"
-    Write-Info "安装目标: $installBase"
-    Write-Host ""
 
     # 检测是否已安装
     $found = Find-ClaudeBinary
@@ -257,15 +244,37 @@ function Main {
         Write-Warn "检测到 Claude Code $existingVer 已安装"
         Write-Host "  路径: $($found.Dir)" -ForegroundColor Cyan
         $overwrite = (Read-Host "  是否覆盖安装? [y/N]").Trim()
-        if ($overwrite -notmatch "^[Yy]") {
+        if ($overwrite -match "^[Yy]") {
+            # 覆盖安装到当前路径
+            $installBase = (Split-Path $found.Dir -Parent)
+            Write-Info "开始覆盖安装 Claude Code $($script:TargetVersion)..."
             Write-Host ""
-            Write-Host "  🤖 Claude Code 已就位！" -ForegroundColor Green
+        } else {
             Write-Host ""
-            return
+            $otherPath = (Read-Host "  是否安装到其他路径? [y/N]").Trim()
+            if ($otherPath -match "^[Yy]") {
+                $inputPath = (Read-Host "  请输入安装路径（留空使用默认: $defaultBase）").Trim()
+                $installBase = if ($inputPath) { $inputPath } else { $defaultBase }
+                Write-Host ""
+            } else {
+                Write-Host ""
+                Write-Host "  🤖 Claude Code 已就位！" -ForegroundColor Green
+                Write-Host ""
+                return
+            }
         }
-        Write-Info "开始覆盖安装 Claude Code $($script:TargetVersion)..."
-        Write-Host ""
+    } else {
+        # 未安装，直接使用默认路径
+        $installBase = if ($script:CustomPath) { $script:CustomPath } else { $defaultBase }
     }
+
+    $script:INSTALL_BASE = $installBase
+    $script:VERSIONS_DIR = "$installBase\share\claude\versions"
+    $script:BIN_DIR = "$installBase\bin"
+    $script:LINK_PATH = "$script:BIN_DIR\claude.exe"
+    $script:CONFIG_PATH = "$env:USERPROFILE\.claude.json"
+    Write-Info "安装目标: $installBase"
+    Write-Host ""
 
     # 执行安装
     $success = Install-ClaudeCode -Version $script:TargetVersion
