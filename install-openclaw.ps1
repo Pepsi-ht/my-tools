@@ -17,7 +17,8 @@
     & {$w=New-Object Net.WebClient;$w.Encoding=[Text.Encoding]::UTF8;iex $w.DownloadString('https://raw.githubusercontent.com/Pepsi-ht/my-tools/main/install-openclaw.ps1')}
 #>
 param(
-    [string]$Version = ""
+    [string]$Version = "",
+    [string]$InstallPath = ""
 )
 
 # ── 执行策略自修复：如果当前策略阻止脚本运行，自动以 Bypass 重启 ──
@@ -59,6 +60,7 @@ function Write-Step    { param($Msg) Write-Host "`n━━━ $Msg ━━━`n" -
 # ── 全局变量 ──
 
 $script:OpenClawVersion = if ($Version) { $Version } elseif ($env:OPENCLAW_VERSION) { $env:OPENCLAW_VERSION } else { "2026.3.28" }
+$script:CustomPath = if ($InstallPath) { $InstallPath } elseif ($env:OPENCLAW_INSTALL_PATH) { $env:OPENCLAW_INSTALL_PATH } else { "" }
 $script:NodeBinDir = $null
 $script:NvmManaged = $false
 $script:RequiredNodeMajor = 22
@@ -1365,6 +1367,21 @@ function Main {
     Write-Host ""
 
     Refresh-PathEnv
+
+    # ── 选择安装路径 ──
+    $defaultPnpmHome = Join-Path (Get-LocalAppData) "pnpm"
+    if ($script:CustomPath) {
+        $customHome = $script:CustomPath
+    } else {
+        $inputPath = (Read-Host "  安装路径（留空使用默认: $defaultPnpmHome）").Trim()
+        $customHome = if ($inputPath) { $inputPath } else { "" }
+    }
+    if ($customHome) {
+        $env:PNPM_HOME = $customHome
+        if ($env:PATH -notlike "*$customHome*") { $env:PATH = "$customHome;$env:PATH" }
+        Write-Info "pnpm 全局路径: $customHome"
+        Write-Host ""
+    }
 
     # 检测是否已安装（全面搜索 + Get-Command）
     $existingVer = $null
