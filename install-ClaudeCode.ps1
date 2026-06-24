@@ -182,7 +182,8 @@ function Install-ClaudeCode {
 
     Write-Err "安装失败 (exit code: $($proc.ExitCode))"
     if ($allStderr) {
-        Write-Host "  $($allStderr.Trim().Split(\"`n\")[-1])" -ForegroundColor Red
+        $lastErr = $allStderr.Trim().Split("`n")[-1]
+        Write-Host "  最近错误: $lastErr" -ForegroundColor Red
     }
     return $false
 }
