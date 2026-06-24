@@ -10,11 +10,11 @@
     powershell -ExecutionPolicy Bypass -File install-openclaw.ps1
     powershell -ExecutionPolicy Bypass -File install-openclaw.ps1 -Version 2026.3.28
   在线一键安装（推荐，直接在当前窗口执行，安装后立即可用）:
-    irm https://你的域名/install-openclaw.ps1 | iex
+    irm https://raw.githubusercontent.com/Pepsi-ht/my-tools/main/install-openclaw.ps1 | iex
   指定版本（通过环境变量）:
-    $env:OPENCLAW_VERSION='2026.3.28'; irm https://你的域名/install-openclaw.ps1 | iex
+    $env:OPENCLAW_VERSION='2026.3.28'; irm https://raw.githubusercontent.com/Pepsi-ht/my-tools/main/install-openclaw.ps1 | iex
   如果中文乱码，改用:
-    & {$w=New-Object Net.WebClient;$w.Encoding=[Text.Encoding]::UTF8;iex $w.DownloadString('https://你的域名/install-openclaw.ps1')}
+    & {$w=New-Object Net.WebClient;$w.Encoding=[Text.Encoding]::UTF8;iex $w.DownloadString('https://raw.githubusercontent.com/Pepsi-ht/my-tools/main/install-openclaw.ps1')}
 #>
 param(
     [string]$Version = ""
