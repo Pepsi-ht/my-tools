@@ -1338,9 +1338,18 @@ function Main {
 
     Refresh-PathEnv
 
-    # 检测是否已安装（全面搜索）
+    # 检测是否已安装（全面搜索 + Get-Command）
     $existingVer = $null
     $found = Find-OpenclawBinary
+    if (-not $found) {
+        # 用 PowerShell Get-Command 兜底查找
+        try {
+            $gcmd = Get-Command openclaw -ErrorAction SilentlyContinue
+            if ($gcmd -and $gcmd.Source) {
+                $found = @{ Path = $gcmd.Source; Dir = Split-Path $gcmd.Source -Parent }
+            }
+        } catch {}
+    }
     if ($found) {
         try { $existingVer = (& $found.Path -v 2>$null).Trim() } catch {}
     }
