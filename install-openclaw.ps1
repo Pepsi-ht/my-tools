@@ -309,6 +309,22 @@ function Find-OpenclawBinary {
     # NodeBinDir
     if ($script:NodeBinDir -and (Test-Path $script:NodeBinDir)) { $searchDirs += $script:NodeBinDir }
 
+    # Node.js 安装目录（npm prefix 全局 bin）
+    try {
+        $npmPrefix = (& $npmCmd prefix -g 2>$null).Trim()
+        if ($npmPrefix) {
+            if (Test-Path $npmPrefix) { $searchDirs += $npmPrefix }
+            $npmBin = Join-Path $npmPrefix "bin"
+            if (Test-Path $npmBin) { $searchDirs += $npmBin }
+        }
+    } catch {}
+    
+    # Node.js 安装根目录下的全局 bin（npm 内置）
+    try {
+        $nodeDir = Split-Path (Get-Command node -ErrorAction SilentlyContinue).Source -Parent
+        if ($nodeDir -and (Test-Path $nodeDir)) { $searchDirs += $nodeDir }
+    } catch {}
+    
     # where.exe 查找
     try {
         $whereResult = & where.exe openclaw 2>$null
@@ -855,16 +871,28 @@ function Run-PnpmInstall {
 
     $progress = 0
     $width = 30
+    $maxWaitSeconds = 180
+    $elapsed = 0
     while (-not $proc.HasExited) {
-        if ($progress -lt 30) { $progress += 3 }
-        elseif ($progress -lt 60) { $progress += 2 }
-        elseif ($progress -lt 90) { $progress += 1 }
-        if ($progress -gt 90) { $progress = 90 }
+        Start-Sleep -Seconds 3
+        $elapsed += 3
+        if ($progress -lt 70) { $progress += 5 }
+        elseif ($progress -lt 85) { $progress += 2 }
+        elseif ($progress -lt 95) { $progress += 1 }
         $filled = [math]::Floor($progress * $width / 100)
         $empty = $width - $filled
         $bar = ([string]::new([char]0x2588, $filled)) + ([string]::new([char]0x2591, $empty))
-        Write-Host "`r  ${Label}进度 [$bar] $($progress.ToString().PadLeft(3))%" -NoNewline
-        Start-Sleep -Seconds 1
+        Write-Host "`r  ${Label}进度 [$bar] $($progress.ToString().PadLeft(3))% ($($elapsed)s)" -NoNewline
+        if ($elapsed -ge $maxWaitSeconds) {
+            Write-Host ""
+            Write-Warn "${Label}超过 ${maxWaitSeconds}s 超时，正在检查进程状态..."
+            if (-not $proc.HasExited) {
+                $proc.Kill()
+                Write-Err "已终止超时的安装进程"
+                return @{ Success = $false; Stderr = "安装超时（${maxWaitSeconds}s）"; Stdout = "" }
+            }
+            break
+        }
     }
 
     $stdout = $stdoutTask.GetAwaiter().GetResult()
