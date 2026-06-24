@@ -115,126 +115,76 @@ function Find-ClaudeBinary {
     return $null
 }
 
-# ── 安装核心（从 GCS 下载 + 校验）──
+# ── 安装核心（npm install）──
 function Install-ClaudeCode {
     param([string]$Version)
 
     Write-Step "正在安装 Claude Code v$Version"
 
-    # 平台
-    if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { $platform = "win32-arm64" } else { $platform = "win32-x64" }
-
-    New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
-
-    # 获取 manifest 校验
     try {
-        $manifestText = Get-RemoteText -Url "$GCS_BUCKET/$Version/manifest.json"
-        $manifest = $manifestText | ConvertFrom-Json
-        $checksum = $manifest.platforms.$platform.checksum
-        $expectedSize = $manifest.platforms.$platform.size
-        if (-not $checksum) { throw "平台 $platform 在 manifest 中不存在" }
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "cmd.exe"
+        $pkgSpec = "@anthropic-ai/claude-code@$Version"
+        $psi.Arguments = "/c npm install -g $pkgSpec 2>&1"
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.RedirectStandardInput = $true
+        $psi.CreateNoWindow = $true
+
+        $proc = [System.Diagnostics.Process]::Start($psi)
     } catch {
-        Write-Err "获取版本信息失败: $_"
+        Write-Err "启动安装进程失败: $_"
         return $false
     }
 
-    # 下载
-    $binaryPath = "$DOWNLOAD_DIR\claude-$Version-$platform.exe"
-    $downloadUrl = "$GCS_BUCKET/$Version/$platform/claude.exe"
+    Write-Host ""
+    Write-Host "  ─── npm 输出 ───" -ForegroundColor Cyan
+    Write-Host ""
 
-    Write-Info "版本: $Version | 平台: $platform"
-    Write-Info "正在下载 Claude Code..."
-
-    try {
-        if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-            # curl 原生进度条
-            & curl.exe -fL --ssl-no-revoke --http1.1 --retry 5 --retry-delay 2 --progress-bar -o $binaryPath $downloadUrl 2>&1 | ForEach-Object {
-                if ($_ -match '(\d+\.?\d*)%') {
-                    Write-Host "`r  下载进度: $($matches[1])%" -NoNewline
-                }
+    $allStdout = ""
+    $allStderr = ""
+    $promptHandled = $false
+    while (-not $proc.HasExited) {
+        $line = $proc.StandardOutput.ReadLine()
+        if ($line -ne $null) {
+            $allStdout += $line + "`n"
+            if (-not $promptHandled -and $line -match "Choose which packages to build|space to select") {
+                $proc.StandardInput.WriteLine("a")
+                $promptHandled = $true
+                Write-Host "  [自动选择全部包进行编译] " -ForegroundColor Green
             }
-            Write-Host "`r  下载进度: 100%"
-            if ($LASTEXITCODE -ne 0) { throw "curl.exe 失败，退出码 $LASTEXITCODE" }
+            Write-Host "  $line"
         } else {
-            # Invoke-WebRequest + 轮询文件大小显示真实进度
-            $webJob = Start-Job -ScriptBlock {
-                param($url, $out)
-                Invoke-WebRequest -Uri $url -OutFile $out -ErrorAction Stop
-            } -ArgumentList $downloadUrl, $binaryPath
-            while ($webJob.State -eq "Running") {
-                Start-Sleep -Milliseconds 500
-                if ((Test-Path $binaryPath) -and $expectedSize) {
-                    $curSize = (Get-Item $binaryPath).Length
-                    $pct = [math]::Min(99, [math]::Round($curSize * 100 / $expectedSize))
-                    Write-Host "`r  下载进度: $pct%" -NoNewline
-                } else {
-                    Write-Host "`r  下载进度: ..." -NoNewline
+            $stderrLine = $proc.StandardError.ReadLine()
+            if ($stderrLine -ne $null) {
+                $allStderr += $stderrLine + "`n"
+                if ($stderrLine -notmatch "^(npm|WARN|http|sill|verbose|timing)") {
+                    Write-Host "  $stderrLine" -ForegroundColor Yellow
                 }
+            } else {
+                Start-Sleep -Milliseconds 200
             }
-            Receive-Job $webJob -ErrorAction Stop | Out-Null
-            Remove-Job $webJob -Force
-            Write-Host "`r  下载进度: 100%"
         }
-        if ($expectedSize) {
-            $actualSize = (Get-Item $binaryPath).Length
-            if ($actualSize -ne [int64]$expectedSize) { throw "文件大小不匹配，期望 $expectedSize，实际 $actualSize" }
-        }
-    } catch {
-        Write-Err "下载失败: $_"
-        if (Test-Path $binaryPath) { Remove-Item -Force $binaryPath }
-        return $false
     }
+    $remainStdout = $proc.StandardOutput.ReadToEnd()
+    $remainStderr = $proc.StandardError.ReadToEnd()
+    $allStdout += $remainStdout
+    $allStderr += $remainStderr
 
-    # SHA256 校验
-    $actualChecksum = (Get-FileHash -Path $binaryPath -Algorithm SHA256).Hash.ToLower()
-    if ($actualChecksum -ne $checksum) {
-        Write-Err "校验和不匹配，文件可能已损坏"
-        Remove-Item -Force $binaryPath
-        return $false
-    }
+    Write-Host ""
+    $proc.WaitForExit()
 
-    Write-Ok "下载完成，SHA256 校验通过"
-
-    # 安装
-    Write-Info "正在安装..."
-    try {
-        New-Item -ItemType Directory -Force -Path $VERSIONS_DIR | Out-Null
-        New-Item -ItemType Directory -Force -Path $BIN_DIR | Out-Null
-
-        $finalPath = "$VERSIONS_DIR\$Version.exe"
-        if (Test-Path $finalPath) { Remove-Item -Force $finalPath }
-        Move-Item -Force $binaryPath $finalPath
-        Copy-Item -Force $finalPath $LINK_PATH
-
-        # 配置
-        $data = @{ installMethod = "native"; autoUpdates = $false; autoUpdatesProtectedForNative = $true }
-        if (Test-Path $CONFIG_PATH) {
-            try {
-                $existing = Get-Content -Raw -Path $CONFIG_PATH | ConvertFrom-Json -AsHashtable
-                if ($existing) {
-                    $data["firstStartTime"] = $existing["firstStartTime"]
-                    Copy-Item -Force $CONFIG_PATH "$env:USERPROFILE\.claude\backups\.claude.json.backup.$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" -ErrorAction SilentlyContinue
-                }
-            } catch {}
-        }
-        if (-not $data.ContainsKey("firstStartTime")) {
-            $data["firstStartTime"] = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        }
-        $data | ConvertTo-Json -Depth 10 | Set-Content -Path $CONFIG_PATH -Encoding UTF8
-
-        # 添加到 PATH
-        $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-        if ($currentPath -notlike "*$BIN_DIR*") {
-            [Environment]::SetEnvironmentVariable("PATH", "$BIN_DIR;$currentPath", "User")
-            $env:PATH = "$BIN_DIR;$env:PATH"
-            Write-Info "已将 $BIN_DIR 添加到用户 PATH"
-        }
-
+    if ($proc.ExitCode -eq 0) {
+        Write-Ok "Claude Code $Version 安装成功"
         return $true
-    } catch {
-        Write-Err "安装失败: $_"
-        return $false
     }
+
+    Write-Err "安装失败 (exit code: $($proc.ExitCode))"
+    if ($allStderr) {
+        Write-Host "  $($allStderr.Trim().Split(\"`n\")[-1])" -ForegroundColor Red
+    }
+    return $false
 }
 
 # ── 主流程 ──
