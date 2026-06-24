@@ -1347,16 +1347,25 @@ function Main {
     if (-not $existingVer) {
         try { $existingVer = (& openclaw -v 2>$null).Trim() } catch {}
     }
-    if ($existingVer -and -not $script:OpenClawVersion) {
+    if ($existingVer) {
         if ($found) { Add-ToUserPath $found.Dir }
         Ensure-ExecutionPolicy
-        Write-Ok "OpenClaw $existingVer 已安装，无需重复安装"
-        Write-Host "`n  🦞 你的龙虾已就位！`n" -ForegroundColor Green
-        $reconfig = (Read-Host "  是否要重新配置 OpenClaw? [y/N]").Trim()
-        if ($reconfig -match "^[Yy]") {
-            Step-Onboard | Out-Null
+        Write-Host ""
+        Write-Warn "检测到 OpenClaw $existingVer 已安装"
+        Write-Host "  路径: $($found.Dir)" -ForegroundColor Cyan
+        $overwrite = (Read-Host "  是否覆盖安装? [y/N]").Trim()
+        if ($overwrite -notmatch "^[Yy]") {
+            Write-Host ""
+            Write-Host "  🦞 你的龙虾已就位！" -ForegroundColor Green
+            Write-Host ""
+            $reconfig = (Read-Host "  是否重新配置 OpenClaw? [y/N]").Trim()
+            if ($reconfig -match "^[Yy]") {
+                Step-Onboard | Out-Null
+            }
+            return
         }
-        return
+        Write-Info "开始覆盖安装 OpenClaw $($script:OpenClawVersion)..."
+        Write-Host ""
     }
 
     if (-not (Step-CheckNode))       { Write-Host "`n按任意键退出..."; $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown"); return }
