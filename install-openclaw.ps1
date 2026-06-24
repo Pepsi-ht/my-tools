@@ -359,23 +359,23 @@ function Get-OpenclawCmd {
 }
 
 function Ensure-PnpmHome {
-    $pnpmHome = $env:PNPM_HOME
-    if (-not $pnpmHome) {
-        $pnpmHome = [Environment]::GetEnvironmentVariable("PNPM_HOME", "User")
-    }
-    if (-not $pnpmHome) {
-        $pnpmHome = Join-Path (Get-LocalAppData) "pnpm"
-    }
+    # 优先读取已持久化的值（防止 pnpm setup 覆盖用户自定义路径）
+    $persistedHome = [Environment]::GetEnvironmentVariable("PNPM_HOME", "User")
+    $pnpmHome = if ($persistedHome) { $persistedHome } elseif ($env:PNPM_HOME) { $env:PNPM_HOME } else { Join-Path (Get-LocalAppData) "pnpm" }
 
     $env:PNPM_HOME = $pnpmHome
+    # pnpm 的 bin 目录是 $pnpmHome\bin，需要加到 PATH
+    $pnpmBinDir = "$pnpmHome\bin"
+    if ($env:PATH -notlike "*$pnpmBinDir*") { $env:PATH = "$pnpmBinDir;$env:PATH" }
     if ($env:PATH -notlike "*$pnpmHome*") { $env:PATH = "$pnpmHome;$env:PATH" }
 
-    $savedHome = [Environment]::GetEnvironmentVariable("PNPM_HOME", "User")
+    $savedHome = $persistedHome
     if ($savedHome -ne $pnpmHome) {
         [Environment]::SetEnvironmentVariable("PNPM_HOME", $pnpmHome, "User")
         Write-Info "已持久化 PNPM_HOME=$pnpmHome"
     }
 
+    Add-ToUserPath $pnpmBinDir
     Add-ToUserPath $pnpmHome
 }
 
@@ -1409,6 +1409,8 @@ function Main {
                 $customHome = if ($inputPath) { $inputPath } else { "" }
                 if ($customHome) {
                     $env:PNPM_HOME = $customHome
+                    $customBin = "$customHome\bin"
+                    if ($env:PATH -notlike "*$customBin*") { $env:PATH = "$customBin;$env:PATH" }
                     if ($env:PATH -notlike "*$customHome*") { $env:PATH = "$customHome;$env:PATH" }
                     Write-Info "pnpm 全局路径: $customHome"
                 }
@@ -1428,6 +1430,8 @@ function Main {
         # 未安装，使用默认路径或自定义路径
         if ($script:CustomPath) {
             $env:PNPM_HOME = $script:CustomPath
+            $customBin = "$($script:CustomPath)\bin"
+            if ($env:PATH -notlike "*$customBin*") { $env:PATH = "$customBin;$env:PATH" }
             if ($env:PATH -notlike "*$script:CustomPath*") { $env:PATH = "$script:CustomPath;$env:PATH" }
             Write-Info "pnpm 全局路径: $script:CustomPath"
         }
