@@ -849,6 +849,7 @@ function Run-NpmInstall {
         $psi.UseShellExecute = $false
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
+        $psi.RedirectStandardInput = $true
         $psi.CreateNoWindow = $true
 
         # 确保子进程使用正确版本的 Node.js
@@ -875,10 +876,17 @@ function Run-NpmInstall {
 
     $allStdout = ""
     $allStderr = ""
+    $promptHandled = $false
     while (-not $proc.HasExited) {
         $line = $proc.StandardOutput.ReadLine()
         if ($line -ne $null) {
             $allStdout += $line + "`n"
+            # 检测到需要选择的提示，自动输入 a（全选）并回车
+            if (-not $promptHandled -and $line -match "Choose which packages to build|space to select") {
+                $proc.StandardInput.WriteLine("a")
+                $promptHandled = $true
+                Write-Host "  [自动选择全部包进行编译] " -ForegroundColor Green
+            }
             Write-Host "  $line"
         } else {
             $stderrLine = $proc.StandardError.ReadLine()
