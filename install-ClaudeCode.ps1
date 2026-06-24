@@ -147,10 +147,33 @@ function Install-ClaudeCode {
 
     try {
         if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-            & curl.exe -fL --ssl-no-revoke --http1.1 --retry 5 --retry-delay 2 -o $binaryPath $downloadUrl
+            # curl 原生进度条
+            & curl.exe -fL --ssl-no-revoke --http1.1 --retry 5 --retry-delay 2 --progress-bar -o $binaryPath $downloadUrl 2>&1 | ForEach-Object {
+                if ($_ -match '(\d+\.?\d*)%') {
+                    Write-Host "`r  下载进度: $($matches[1])%" -NoNewline
+                }
+            }
+            Write-Host "`r  下载进度: 100%"
             if ($LASTEXITCODE -ne 0) { throw "curl.exe 失败，退出码 $LASTEXITCODE" }
         } else {
-            Invoke-WebRequest -Uri $downloadUrl -OutFile $binaryPath -ErrorAction Stop
+            # Invoke-WebRequest + 轮询文件大小显示真实进度
+            $webJob = Start-Job -ScriptBlock {
+                param($url, $out)
+                Invoke-WebRequest -Uri $url -OutFile $out -ErrorAction Stop
+            } -ArgumentList $downloadUrl, $binaryPath
+            while ($webJob.State -eq "Running") {
+                Start-Sleep -Milliseconds 500
+                if ((Test-Path $binaryPath) -and $expectedSize) {
+                    $curSize = (Get-Item $binaryPath).Length
+                    $pct = [math]::Min(99, [math]::Round($curSize * 100 / $expectedSize))
+                    Write-Host "`r  下载进度: $pct%" -NoNewline
+                } else {
+                    Write-Host "`r  下载进度: ..." -NoNewline
+                }
+            }
+            Receive-Job $webJob -ErrorAction Stop | Out-Null
+            Remove-Job $webJob -Force
+            Write-Host "`r  下载进度: 100%"
         }
         if ($expectedSize) {
             $actualSize = (Get-Item $binaryPath).Length

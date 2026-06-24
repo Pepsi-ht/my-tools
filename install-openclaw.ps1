@@ -871,20 +871,24 @@ function Run-PnpmInstall {
         return @{ Success = $false; Stderr = ""; Stdout = "" }
     }
 
-    $progress = 0
-    $width = 30
-    $maxWaitSeconds = 180
+    $maxWaitSeconds = 300
     $elapsed = 0
+    $lastLine = ""
     while (-not $proc.HasExited) {
-        Start-Sleep -Seconds 3
-        $elapsed += 3
-        if ($progress -lt 70) { $progress += 5 }
-        elseif ($progress -lt 85) { $progress += 2 }
-        elseif ($progress -lt 95) { $progress += 1 }
-        $filled = [math]::Floor($progress * $width / 100)
-        $empty = $width - $filled
-        $bar = ([string]::new([char]0x2588, $filled)) + ([string]::new([char]0x2591, $empty))
-        Write-Host "`r  ${Label}进度 [$bar] $($progress.ToString().PadLeft(3))% ($($elapsed)s)" -NoNewline
+        Start-Sleep -Seconds 2
+        $elapsed += 2
+        
+        # 读取 stdout/stderr 的最新一行显示真实进度
+        try {
+            $partial = $proc.StandardOutput.ReadLineAsync()
+            $stderrLine = $proc.StandardError.ReadLineAsync()
+        } catch {}
+        
+        $elapsedMin = [math]::Floor($elapsed / 60)
+        $elapsedSec = $elapsed % 60
+        $timeStr = if ($elapsedMin -gt 0) { "${elapsedMin}m${elapsedSec}s" } else { "${elapsedSec}s" }
+        Write-Host "`r  正在安装... (${timeStr})" -NoNewline
+        
         if ($elapsed -ge $maxWaitSeconds) {
             Write-Host ""
             Write-Warn "${Label}超过 ${maxWaitSeconds}s 超时，正在检查进程状态..."
@@ -896,6 +900,7 @@ function Run-PnpmInstall {
             break
         }
     }
+    Write-Host "`r  安装完成.          "
 
     $stdout = $stdoutTask.GetAwaiter().GetResult()
     $stderr = $stderrTask.GetAwaiter().GetResult()
