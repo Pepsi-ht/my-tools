@@ -1,240 +1,285 @@
-<#
-.SYNOPSIS
-  Claude Code 一键安装脚本 (Windows)
-.DESCRIPTION
-  自动检测并安装 Claude Code，支持版本锁定、覆盖安装提示与 npm 镜像切换。
-.PARAMETER Version
-  指定安装的版本号（例如 2.1.153）。不指定则安装 2.1.153。
-.NOTES
-  用法:
-    powershell -ExecutionPolicy Bypass -File install-ClaudeCode.ps1
-    powershell -ExecutionPolicy Bypass -File install-ClaudeCode.ps1 -Version 2.1.153
-  在线一键安装:
-    irm https://raw.githubusercontent.com/Pepsi-ht/my-tools/main/install-ClaudeCode.ps1 | iex
-  指定版本（通过环境变量）:
-    $env:CC_VERSION='2.1.153'; irm ... | iex
-#>
 param(
-    [string]$Version = "",
-    [string]$InstallPath = ""
+    [Parameter(Position=0)]
+    [ValidatePattern('^(stable|latest|\d+\.\d+\.\d+(-[^\s]+)?)$')]
+    [string]$Target = "latest"
 )
 
-# ── 执行策略自修复 ──
-if ($MyInvocation.MyCommand.Path) {
-    try {
-        $policy = Get-ExecutionPolicy -Scope Process
-        if ($policy -eq "Restricted" -or $policy -eq "AllSigned") {
-            Write-Host "  [INFO] 检测到执行策略为 $policy 正在以 Bypass 策略重新启动..." -ForegroundColor Blue
-            Start-Process -FilePath "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`"" -Wait -NoNewWindow
-            exit $LASTEXITCODE
-        }
-    } catch {}
-}
-
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-[Console]::InputEncoding  = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = 'SilentlyContinue'
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-if ($PSVersionTable.PSVersion.Major -lt 5) {
-    Write-Host "  [FAIL] 需要 PowerShell 5.0 或更高版本" -ForegroundColor Red
+# Check for 32-bit Windows
+if (-not [Environment]::Is64BitProcess) {
+    Write-Error "Claude Code does not support 32-bit Windows. Please use a 64-bit version of Windows."
     exit 1
 }
 
-# ── 颜色输出 ──
-function Write-Info    { param($Msg) Write-Host "  [INFO] " -ForegroundColor Blue -NoNewline; Write-Host $Msg }
-function Write-Ok      { param($Msg) Write-Host "  [OK]   " -ForegroundColor Green -NoNewline; Write-Host $Msg }
-function Write-Warn    { param($Msg) Write-Host "  [WARN] " -ForegroundColor Yellow -NoNewline; Write-Host $Msg }
-function Write-Err     { param($Msg) Write-Host "  [FAIL] " -ForegroundColor Red -NoNewline; Write-Host $Msg }
-function Write-Step    { param($Msg) Write-Host "`n━━━ $Msg ━━━`n" -ForegroundColor Cyan }
+$DEFAULT_GCS_BUCKET = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
+$GCS_BUCKET = if ($env:CLAUDE_CODE_DIST_BASE) { $env:CLAUDE_CODE_DIST_BASE.TrimEnd("/") } else { $DEFAULT_GCS_BUCKET }
+$DOWNLOAD_DIR = "$env:USERPROFILE\.claude\downloads"
+$INSTALL_BASE = "$env:USERPROFILE\.local\share\claude"
+$VERSIONS_DIR = "$INSTALL_BASE\versions"
+$BIN_DIR = "$env:USERPROFILE\.local\bin"
+$LINK_PATH = "$BIN_DIR\claude.exe"
+$CONFIG_PATH = "$env:USERPROFILE\.claude.json"
+$LOCKS_DIR = "$env:USERPROFILE\.local\state\claude\locks"
+$CACHE_DIR = "$env:USERPROFILE\.cache\claude\staging"
+$DOWNLOADS_DIR = "$env:USERPROFILE\.claude\downloads"
 
-# ── 全局变量 ──
-$script:TargetVersion = if ($Version) { $Version } elseif ($env:CC_VERSION) { $env:CC_VERSION } else { "2.1.153" }
-$script:CustomPath = if ($InstallPath) { $InstallPath } elseif ($env:CC_INSTALL_PATH) { $env:CC_INSTALL_PATH } else { "" }
+function Write-Config {
+    param(
+        [string]$ConfigPath,
+        [string]$FirstStartTime
+    )
 
-# ── 设置 npm 镜像 ──
-function Step-SetMirror {
-    Write-Step "步骤 1/2: 设置国内 npm 镜像"
-    $env:npm_config_registry = "https://registry.npmmirror.com"
-    Write-Ok "npm 镜像已临时设置为 https://registry.npmmirror.com（仅本次安装生效）"
-    return $true
-}
-
-# ── 检测已安装 ──
-function Find-ClaudeBinary {
-    $searchDirs = @()
-    $env:PATH -split ";" | ForEach-Object {
-        if ($_ -and (Test-Path $_)) { $searchDirs += $_ }
-    }
-    $searchDirs = $searchDirs | Where-Object { $_ } | Select-Object -Unique
-    foreach ($dir in $searchDirs) {
-        foreach ($name in @("claude.exe", "claude.cmd")) {
-            $candidate = Join-Path $dir $name
-            if (Test-Path $candidate) {
-                return @{ Path = $candidate; Dir = $dir }
+    $data = @{}
+    if (Test-Path $ConfigPath) {
+        try {
+            $existing = Get-Content -Raw -Path $ConfigPath | ConvertFrom-Json -AsHashtable
+            if ($existing) {
+                $data = $existing
             }
         }
-    }
-    try {
-        $gcmd = Get-Command claude -ErrorAction SilentlyContinue
-        if ($gcmd -and $gcmd.Source) {
-            return @{ Path = $gcmd.Source; Dir = Split-Path $gcmd.Source -Parent }
+        catch {
+            $data = @{}
         }
-    } catch {}
-    return $null
+    }
+
+    $data["installMethod"] = "native"
+    $data["autoUpdates"] = $false
+    $data["autoUpdatesProtectedForNative"] = $true
+    if (-not $data.ContainsKey("firstStartTime")) {
+        $data["firstStartTime"] = $FirstStartTime
+    }
+
+    $json = $data | ConvertTo-Json -Depth 10
+    Set-Content -Path $ConfigPath -Value $json -Encoding UTF8
 }
 
-# ── 安装核心（npm install，实时显示输出）──
-function Install-ClaudeCode {
-    param([string]$Version)
+function Get-RemoteText {
+    param(
+        [string]$Url
+    )
 
-    Write-Step "步骤 2/2: 安装 Claude Code v$Version"
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        try {
+            $result = & curl.exe -fsSL --ssl-no-revoke --http1.1 --retry 5 --retry-delay 2 $Url
+            if ($LASTEXITCODE -eq 0) {
+                if ($result -is [array]) {
+                    return ($result -join "`n")
+                }
+                return $result
+            }
+            Write-Warning "curl.exe failed with exit code $LASTEXITCODE, falling back to Invoke-RestMethod"
+        }
+        catch {
+            Write-Warning "curl.exe failed: $_. Falling back to Invoke-RestMethod"
+        }
+    }
 
-    $pkgSpec = "@anthropic-ai/claude-code@$Version"
+    return Invoke-RestMethod -Uri $Url -ErrorAction Stop
+}
 
-    try {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = "cmd.exe"
-        $psi.Arguments = "/c npm install -g $pkgSpec 2>&1"
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.RedirectStandardInput = $true
-        $psi.CreateNoWindow = $true
+function Test-BinaryFile {
+    param(
+        [string]$Path,
+        [string]$Checksum,
+        [object]$ExpectedSize
+    )
 
-        $proc = [System.Diagnostics.Process]::Start($psi)
-    } catch {
-        Write-Err "启动安装进程失败: $_"
+    if (-not (Test-Path $Path)) {
         return $false
     }
 
-    Write-Host "  ─── npm 输出 ───" -ForegroundColor Cyan
-    Write-Host ""
-
-    $allStdout = ""
-    $allStderr = ""
-    $promptHandled = $false
-    while (-not $proc.HasExited) {
-        $line = $proc.StandardOutput.ReadLine()
-        if ($line -ne $null) {
-            $allStdout += $line + "`n"
-            if (-not $promptHandled -and $line -match "Choose which packages to build|space to select") {
-                $proc.StandardInput.WriteLine("a")
-                $promptHandled = $true
-                Write-Host "  [自动选择全部包进行编译] " -ForegroundColor Green
-            }
-            Write-Host "  $line"
-        } else {
-            $stderrLine = $proc.StandardError.ReadLine()
-            if ($stderrLine -ne $null) {
-                $allStderr += $stderrLine + "`n"
-                if ($stderrLine -notmatch "^(npm|WARN|http|sill|verbose|timing)") {
-                    Write-Host "  $stderrLine" -ForegroundColor Yellow
-                }
-            } else {
-                Start-Sleep -Milliseconds 200
-            }
+    if ($ExpectedSize) {
+        $actualSize = (Get-Item -Path $Path).Length
+        if ($actualSize -ne [int64]$ExpectedSize) {
+            return $false
         }
     }
-    $proc.WaitForExit()
 
-    if ($proc.ExitCode -eq 0) {
-        Write-Host ""
-        Write-Ok "Claude Code $Version 安装成功"
-        return $true
-    }
-
-    Write-Host ""
-    Write-Err "安装失败 (exit code: $($proc.ExitCode))"
-    return $false
+    $actualChecksum = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLower()
+    return ($actualChecksum -eq $Checksum)
 }
 
-# ── 主流程 ──
-function Main {
-    Write-Host ""
-    Write-Host "  🤖 Claude Code 一键安装脚本" -ForegroundColor Green
-    Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Blue
-    Write-Host ""
+function Get-BinaryFile {
+    param(
+        [string]$Url,
+        [string]$OutFile
+    )
 
-    # 刷新 PATH
-    $machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
-    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-    $env:PATH = "$machinePath;$userPath"
-
-    # 检测是否已安装
-    $found = Find-ClaudeBinary
-    $existingVer = $null
-    if ($found) {
-        try { $existingVer = (& $found.Path --version 2>$null).Trim() } catch {}
+    if (Get-Command aria2c.exe -ErrorAction SilentlyContinue) {
+        & aria2c.exe `
+            --allow-overwrite=true `
+            --auto-file-renaming=false `
+            --continue=true `
+            --max-connection-per-server=16 `
+            --split=16 `
+            --min-split-size=1M `
+            --retry-wait=2 `
+            --max-tries=5 `
+            --summary-interval=0 `
+            --console-log-level=warn `
+            --dir (Split-Path -Parent $OutFile) `
+            --out (Split-Path -Leaf $OutFile) `
+            $Url
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+        Write-Warning "aria2c.exe failed with exit code $LASTEXITCODE, falling back to curl.exe"
     }
-    if (-not $existingVer) {
-        try { $existingVer = (& claude --version 2>$null).Trim() } catch {}
+
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        & curl.exe -fL --ssl-no-revoke --retry 5 --retry-delay 2 --continue-at - -o $OutFile $Url
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+        throw "curl.exe failed with exit code $LASTEXITCODE"
     }
 
-    if ($existingVer) {
-        Write-Host ""
-        Write-Warn "检测到 Claude Code $existingVer 已安装"
-        Write-Host "  路径: $($found.Dir)" -ForegroundColor Cyan
-        $overwrite = (Read-Host "  是否覆盖安装? [y/N]").Trim()
-        if ($overwrite -match "^[Yy]") {
-            Write-Info "开始覆盖安装 Claude Code $($script:TargetVersion)..."
-            Write-Host ""
-        } else {
-            Write-Host ""
-            $otherPath = (Read-Host "  是否安装到其他路径? [y/N]").Trim()
-            if ($otherPath -match "^[Yy]") {
-                $inputPath = (Read-Host "  请输入安装路径（留空使用默认: C:\Users\duzijian\.local）").Trim()
-                if ($inputPath) {
-                    $script:CustomPath = $inputPath
-                }
-                Write-Info "将安装 Claude Code $($script:TargetVersion)..."
-                Write-Host ""
-            } else {
-                Write-Host ""
-                Write-Host "  🤖 Claude Code 已就位！" -ForegroundColor Green
-                Write-Host ""
-                return
-            }
+    Invoke-WebRequest -Uri $Url -OutFile $OutFile -ErrorAction Stop
+}
+
+# Use native ARM64 binary on ARM64 Windows, x64 otherwise
+if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
+    $platform = "win32-arm64"
+} else {
+    $platform = "win32-x64"
+}
+New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
+
+# Resolve target version
+try {
+    if ($Target -in @("latest", "stable")) {
+        $version = (Get-RemoteText -Url "$GCS_BUCKET/latest").ToString().Trim()
+    }
+    else {
+        $version = $Target
+    }
+}
+catch {
+    Write-Error "Failed to resolve version: $_"
+    exit 1
+}
+
+try {
+    $manifestText = Get-RemoteText -Url "$GCS_BUCKET/$version/manifest.json"
+    if ($manifestText -is [string]) {
+        $manifest = $manifestText | ConvertFrom-Json
+    }
+    else {
+        $manifest = $manifestText
+    }
+    $checksum = $manifest.platforms.$platform.checksum
+    $expectedSize = $manifest.platforms.$platform.size
+
+    if (-not $checksum) {
+        Write-Error "Platform $platform not found in manifest"
+        exit 1
+    }
+}
+catch {
+    Write-Error "Failed to get manifest: $_"
+    exit 1
+}
+
+# Download and verify
+$binaryPath = "$DOWNLOAD_DIR\claude-$version-$platform.exe"
+$downloadUrl = "$GCS_BUCKET/$version/$platform/claude.exe"
+$finalPath = "$VERSIONS_DIR\$version.exe"
+
+Write-Output "Claude Code version: $version"
+Write-Output "Platform: $platform"
+Write-Output "Download source: $downloadUrl"
+
+try {
+    if (Test-BinaryFile -Path $finalPath -Checksum $checksum -ExpectedSize $expectedSize) {
+        Write-Output "Existing version verified, skipping download."
+        New-Item -ItemType Directory -Force -Path $BIN_DIR | Out-Null
+        Copy-Item -Force $finalPath $LINK_PATH
+        Write-Output ""
+        Write-Output "Claude Code already installed and verified!"
+        Write-Output ""
+        Write-Output "Version: $version"
+        Write-Output "Location: $LINK_PATH"
+        Write-Output ""
+        exit 0
+    }
+
+    if (Test-BinaryFile -Path $binaryPath -Checksum $checksum -ExpectedSize $expectedSize) {
+        Write-Output "Cached download verified, reusing local file."
+    } else {
+        Write-Output "Downloading Claude Code binary..."
+        Get-BinaryFile -Url $downloadUrl -OutFile $binaryPath
+    }
+
+    if ($expectedSize) {
+        $actualSize = (Get-Item -Path $binaryPath).Length
+        if ($actualSize -ne [int64]$expectedSize) {
+            throw "Downloaded file size mismatch. Expected $expectedSize bytes, got $actualSize bytes"
         }
     }
+}
+catch {
+    Write-Error "Failed to download binary: $_"
+    if (Test-Path $binaryPath) {
+        Remove-Item -Force $binaryPath
+    }
+    exit 1
+}
 
-    # 自定义路径时设置 npm prefix
-    if ($script:CustomPath) {
-        $env:npm_config_prefix = $script:CustomPath
-        Write-Info "npm 安装路径: $script:CustomPath"
+# Calculate checksum
+$actualChecksum = (Get-FileHash -Path $binaryPath -Algorithm SHA256).Hash.ToLower()
+
+if ($actualChecksum -ne $checksum) {
+    Write-Error "Checksum verification failed"
+    Remove-Item -Force $binaryPath
+    exit 1
+}
+
+# Install directly without invoking the bundled installer
+Write-Output "Setting up Claude Code..."
+try {
+    New-Item -ItemType Directory -Force -Path $VERSIONS_DIR | Out-Null
+    New-Item -ItemType Directory -Force -Path $BIN_DIR | Out-Null
+    New-Item -ItemType Directory -Force -Path $LOCKS_DIR | Out-Null
+    New-Item -ItemType Directory -Force -Path $CACHE_DIR | Out-Null
+    New-Item -ItemType Directory -Force -Path $DOWNLOADS_DIR | Out-Null
+    New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\backups" | Out-Null
+
+    if (Test-Path $finalPath) {
+        Remove-Item -Force $finalPath
+    }
+    Move-Item -Force $binaryPath $finalPath
+    Copy-Item -Force $finalPath $LINK_PATH
+
+    if (Test-Path $CONFIG_PATH) {
+        Copy-Item -Force $CONFIG_PATH "$env:USERPROFILE\.claude\backups\.claude.json.backup.$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" -ErrorAction SilentlyContinue
     }
 
-    # 设置镜像
-    Step-SetMirror
+    $firstStartTime = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+    Write-Config -ConfigPath $CONFIG_PATH -FirstStartTime $firstStartTime
 
-    # 安装
-    $success = Install-ClaudeCode -Version $script:TargetVersion
-    if (-not $success) {
-        Write-Host "`n按任意键退出..."
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-        return
-    }
-
-    # 显示真实路径
-    Write-Host ""
-    Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
-    Write-Host "  ✅ Claude Code $($script:TargetVersion) 安装完成！" -ForegroundColor Green
-    Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
+    Write-Output ""
+    Write-Output "Claude Code successfully installed!"
+    Write-Output ""
+    Write-Output "Version: $version"
+    Write-Output "Location: $LINK_PATH"
+    Write-Output ""
+    Write-Output "PATH target: $BIN_DIR"
+    Write-Output "If claude is not found, add that directory to your user PATH and reopen PowerShell."
+}
+finally {
     try {
-        $realPath = (Get-Command claude -ErrorAction SilentlyContinue).Source
-        if ($realPath) {
-            Write-Host "  位置: $realPath" -ForegroundColor Cyan
-            # 如果不在 PATH 中，提示添加
-            $parentDir = Split-Path $realPath -Parent
-            if ($env:PATH -notlike "*$parentDir*") {
-                Write-Host "  提示: $parentDir 不在 PATH 中，可运行以下命令添加:" -ForegroundColor Yellow
-                Write-Host "    `$env:PATH = `"$parentDir;`$env:PATH`"" -ForegroundColor Cyan
-            }
+        if (Test-Path $binaryPath) {
+            Remove-Item -Force $binaryPath
         }
-    } catch {}
-    Write-Host ""
+    }
+    catch {
+        Write-Warning "Could not remove temporary file: $binaryPath"
+    }
 }
 
-Main
+Write-Output ""
+Write-Output "$([char]0x2705) Installation complete!"
+Write-Output ""
