@@ -4,21 +4,20 @@
 .DESCRIPTION
   自动检测并安装 Node.js v22+、Git，然后安装并配置 OpenClaw。
 .PARAMETER Version
-  指定安装的 OpenClaw 版本号（例如 2026.3.28）。不指定则安装 2026.3.28。
+  指定安装的 OpenClaw 版本号（例如 1.2.3）。不指定则安装最新版。
 .NOTES
   用法:
     powershell -ExecutionPolicy Bypass -File install-openclaw.ps1
-    powershell -ExecutionPolicy Bypass -File install-openclaw.ps1 -Version 2026.3.28
+    powershell -ExecutionPolicy Bypass -File install-openclaw.ps1 -Version 1.2.3
   在线一键安装（推荐，直接在当前窗口执行，安装后立即可用）:
-    irm https://raw.githubusercontent.com/Pepsi-ht/my-tools/main/install-openclaw.ps1 | iex
+    irm https://你的域名/install-openclaw.ps1 | iex
   指定版本（通过环境变量）:
-    $env:OPENCLAW_VERSION='2026.3.28'; irm https://raw.githubusercontent.com/Pepsi-ht/my-tools/main/install-openclaw.ps1 | iex
+    $env:OPENCLAW_VERSION='1.2.3'; irm https://你的域名/install-openclaw.ps1 | iex
   如果中文乱码，改用:
-    & {$w=New-Object Net.WebClient;$w.Encoding=[Text.Encoding]::UTF8;iex $w.DownloadString('https://raw.githubusercontent.com/Pepsi-ht/my-tools/main/install-openclaw.ps1')}
+    & {$w=New-Object Net.WebClient;$w.Encoding=[Text.Encoding]::UTF8;iex $w.DownloadString('https://你的域名/install-openclaw.ps1')}
 #>
 param(
-    [string]$Version = "",
-    [string]$InstallPath = ""
+    [string]$Version = ""
 )
 
 # ── 执行策略自修复：如果当前策略阻止脚本运行，自动以 Bypass 重启 ──
@@ -59,8 +58,7 @@ function Write-Step    { param($Msg) Write-Host "`n━━━ $Msg ━━━`n" -
 
 # ── 全局变量 ──
 
-$script:OpenClawVersion = if ($Version) { $Version } elseif ($env:OPENCLAW_VERSION) { $env:OPENCLAW_VERSION } else { "2026.3.28" }
-$script:CustomPath = if ($InstallPath) { $InstallPath } elseif ($env:OPENCLAW_INSTALL_PATH) { $env:OPENCLAW_INSTALL_PATH } else { "" }
+$script:OpenClawVersion = if ($Version) { $Version } elseif ($env:OPENCLAW_VERSION) { $env:OPENCLAW_VERSION } else { "" }
 $script:NodeBinDir = $null
 $script:NvmManaged = $false
 $script:RequiredNodeMajor = 22
@@ -311,22 +309,6 @@ function Find-OpenclawBinary {
     # NodeBinDir
     if ($script:NodeBinDir -and (Test-Path $script:NodeBinDir)) { $searchDirs += $script:NodeBinDir }
 
-    # Node.js 安装目录（npm prefix 全局 bin）
-    try {
-        $npmPrefix = (& $npmCmd prefix -g 2>$null).Trim()
-        if ($npmPrefix) {
-            if (Test-Path $npmPrefix) { $searchDirs += $npmPrefix }
-            $npmBin = Join-Path $npmPrefix "bin"
-            if (Test-Path $npmBin) { $searchDirs += $npmBin }
-        }
-    } catch {}
-    
-    # Node.js 安装根目录下的全局 bin（npm 内置）
-    try {
-        $nodeDir = Split-Path (Get-Command node -ErrorAction SilentlyContinue).Source -Parent
-        if ($nodeDir -and (Test-Path $nodeDir)) { $searchDirs += $nodeDir }
-    } catch {}
-    
     # where.exe 查找
     try {
         $whereResult = & where.exe openclaw 2>$null
@@ -359,23 +341,23 @@ function Get-OpenclawCmd {
 }
 
 function Ensure-PnpmHome {
-    # 优先读取已持久化的值（防止 pnpm setup 覆盖用户自定义路径）
-    $persistedHome = [Environment]::GetEnvironmentVariable("PNPM_HOME", "User")
-    $pnpmHome = if ($persistedHome) { $persistedHome } elseif ($env:PNPM_HOME) { $env:PNPM_HOME } else { Join-Path (Get-LocalAppData) "pnpm" }
+    $pnpmHome = $env:PNPM_HOME
+    if (-not $pnpmHome) {
+        $pnpmHome = [Environment]::GetEnvironmentVariable("PNPM_HOME", "User")
+    }
+    if (-not $pnpmHome) {
+        $pnpmHome = Join-Path (Get-LocalAppData) "pnpm"
+    }
 
     $env:PNPM_HOME = $pnpmHome
-    # pnpm 的 bin 目录是 $pnpmHome\bin，需要加到 PATH
-    $pnpmBinDir = "$pnpmHome\bin"
-    if ($env:PATH -notlike "*$pnpmBinDir*") { $env:PATH = "$pnpmBinDir;$env:PATH" }
     if ($env:PATH -notlike "*$pnpmHome*") { $env:PATH = "$pnpmHome;$env:PATH" }
 
-    $savedHome = $persistedHome
+    $savedHome = [Environment]::GetEnvironmentVariable("PNPM_HOME", "User")
     if ($savedHome -ne $pnpmHome) {
         [Environment]::SetEnvironmentVariable("PNPM_HOME", $pnpmHome, "User")
         Write-Info "已持久化 PNPM_HOME=$pnpmHome"
     }
 
-    Add-ToUserPath $pnpmBinDir
     Add-ToUserPath $pnpmHome
 }
 
@@ -838,18 +820,17 @@ function Step-InstallPnpm {
     }
 }
 
-function Run-NpmInstall {
-    param([string]$NpmCmd, [string]$Label = "安装")
+function Run-PnpmInstall {
+    param([string]$PnpmCmd, [string]$Label = "安装")
 
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = "cmd.exe"
-        $pkgSpec = if ($script:OpenClawVersion) { "openclaw@$($script:OpenClawVersion)" } else { "openclaw@latest" }
-        $psi.Arguments = "/c `"$NpmCmd`" install -g $pkgSpec 2>&1"
+        $pkgSpec = "openclaw@2026.6.10"
+        $psi.Arguments = "/c npm install -g $pkgSpec"
         $psi.UseShellExecute = $false
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
-        $psi.RedirectStandardInput = $true
         $psi.CreateNoWindow = $true
 
         # 确保子进程使用正确版本的 Node.js
@@ -865,55 +846,40 @@ function Run-NpmInstall {
         }
 
         $proc = [System.Diagnostics.Process]::Start($psi)
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
     } catch {
         Write-Err "启动${Label}进程失败: $_"
         return @{ Success = $false; Stderr = ""; Stdout = "" }
     }
 
-    Write-Host ""
-    Write-Host "  ─── npm 输出 ───" -ForegroundColor Cyan
-    Write-Host ""
-
-    $allStdout = ""
-    $allStderr = ""
-    $promptHandled = $false
+    $progress = 0
+    $width = 30
     while (-not $proc.HasExited) {
-        $line = $proc.StandardOutput.ReadLine()
-        if ($line -ne $null) {
-            $allStdout += $line + "`n"
-            # 检测到需要选择的提示，自动输入 a（全选）并回车
-            if (-not $promptHandled -and $line -match "Choose which packages to build|space to select") {
-                $proc.StandardInput.WriteLine("a")
-                $promptHandled = $true
-                Write-Host "  [自动选择全部包进行编译] " -ForegroundColor Green
-            }
-            Write-Host "  $line"
-        } else {
-            $stderrLine = $proc.StandardError.ReadLine()
-            if ($stderrLine -ne $null) {
-                $allStderr += $stderrLine + "`n"
-                if ($stderrLine -notmatch "^(npm|WARN|http|sill|verbose|timing)") {
-                    Write-Host "  $stderrLine" -ForegroundColor Yellow
-                }
-            } else {
-                Start-Sleep -Milliseconds 200
-            }
-        }
+        if ($progress -lt 30) { $progress += 3 }
+        elseif ($progress -lt 60) { $progress += 2 }
+        elseif ($progress -lt 90) { $progress += 1 }
+        if ($progress -gt 90) { $progress = 90 }
+        $filled = [math]::Floor($progress * $width / 100)
+        $empty = $width - $filled
+        $bar = ([string]::new([char]0x2588, $filled)) + ([string]::new([char]0x2591, $empty))
+        Write-Host "`r  ${Label}进度 [$bar] $($progress.ToString().PadLeft(3))%" -NoNewline
+        Start-Sleep -Seconds 1
     }
-    # 读取剩余的输出
-    $remainStdout = $proc.StandardOutput.ReadToEnd()
-    $remainStderr = $proc.StandardError.ReadToEnd()
-    $allStdout += $remainStdout
-    $allStderr += $remainStderr
 
-    Write-Host ""
-    $proc.WaitForExit()
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
 
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+    $fullBar = [string]::new([char]0x2588, $width)
     if ($proc.ExitCode -eq 0) {
-        return @{ Success = $true; Stderr = $allStderr; Stdout = $allStdout }
+        Write-Host "`r  ${Label}进度 [$fullBar] 100%"
+        return @{ Success = $true; Stderr = $stderr; Stdout = $stdout }
     }
 
-    return @{ Success = $false; Stderr = $allStderr; Stdout = $allStdout; ExitCode = $proc.ExitCode }
+    Write-Host "`r  ${Label}进度 [$fullBar] 失败"
+    return @{ Success = $false; Stderr = $stderr; Stdout = $stdout; ExitCode = $proc.ExitCode }
 }
 
 function Step-InstallOpenClaw {
@@ -958,7 +924,7 @@ function Step-InstallOpenClaw {
                 Write-Info "已清理 $pnpmGlobalDir"
             }
             try { & $PnpmCmd store prune 2>$null } catch {}
-            $retryResult = Run-NpmInstall -NpmCmd $PnpmCmd -Label "重试安装"
+            $retryResult = Run-PnpmInstall -PnpmCmd $PnpmCmd -Label "重试安装"
             $Result.Value = $retryResult
             return $retryResult.Success
         }
@@ -1055,7 +1021,7 @@ function Step-InstallOpenClaw {
             try {
                 Set-GitMirror $mirror
                 Write-Info "正在使用镜像 $mirror 安装..."
-                $r = Run-NpmInstall -NpmCmd $pnpmCmd -Label "安装"
+                $r = Run-PnpmInstall -PnpmCmd $pnpmCmd -Label "安装"
                 Clear-GitMirror
                 if ($r.Success) { return $r }
                 $rr = $r
@@ -1093,7 +1059,7 @@ function Step-InstallOpenClaw {
 
     # ── 安装 ──
 
-    $result = Run-NpmInstall -NpmCmd $pnpmCmd -Label "安装"
+    $result = Run-PnpmInstall -PnpmCmd $pnpmCmd -Label "安装"
     if ($result.Success) { return (On-InstallSuccess) }
     if (Try-InstallWithCleanup $pnpmCmd ([ref]$result)) { return (On-InstallSuccess) }
 
@@ -1372,73 +1338,25 @@ function Main {
 
     Refresh-PathEnv
 
-    # ── 默认路径 ──
-    $defaultPnpmHome = Join-Path (Get-LocalAppData) "pnpm"
-
-    # 检测是否已安装（全面搜索 + Get-Command）
+    # 检测是否已安装（全面搜索）
     $existingVer = $null
     $found = Find-OpenclawBinary
-    if (-not $found) {
-        # 用 PowerShell Get-Command 兜底查找
-        try {
-            $gcmd = Get-Command openclaw -ErrorAction SilentlyContinue
-            if ($gcmd -and $gcmd.Source) {
-                $found = @{ Path = $gcmd.Source; Dir = Split-Path $gcmd.Source -Parent }
-            }
-        } catch {}
-    }
     if ($found) {
         try { $existingVer = (& $found.Path -v 2>$null).Trim() } catch {}
     }
     if (-not $existingVer) {
         try { $existingVer = (& openclaw -v 2>$null).Trim() } catch {}
     }
-    if ($existingVer) {
+    if ($existingVer -and -not $script:OpenClawVersion) {
         if ($found) { Add-ToUserPath $found.Dir }
         Ensure-ExecutionPolicy
-        Write-Host ""
-        Write-Warn "检测到 OpenClaw $existingVer 已安装"
-        Write-Host "  路径: $($found.Dir)" -ForegroundColor Cyan
-        $overwrite = (Read-Host "  是否覆盖安装? [y/N]").Trim()
-        if ($overwrite -match "^[Yy]") {
-            # 覆盖安装到当前 pnpm 路径
-            $customHome = "$env:USERPROFILE\AppData\Local\pnpm"
-            Write-Info "开始覆盖安装 OpenClaw $($script:OpenClawVersion)..."
-            Write-Host ""
-        } else {
-            Write-Host ""
-            $otherPath = (Read-Host "  是否安装到其他路径? [y/N]").Trim()
-            if ($otherPath -match "^[Yy]") {
-                $inputPath = (Read-Host "  请输入安装路径（留空使用默认: $defaultPnpmHome）").Trim()
-                $customHome = if ($inputPath) { $inputPath } else { "" }
-                if ($customHome) {
-                    $env:PNPM_HOME = $customHome
-                    $customBin = "$customHome\bin"
-                    if ($env:PATH -notlike "*$customBin*") { $env:PATH = "$customBin;$env:PATH" }
-                    if ($env:PATH -notlike "*$customHome*") { $env:PATH = "$customHome;$env:PATH" }
-                    Write-Info "pnpm 全局路径: $customHome"
-                }
-                Write-Host ""
-            } else {
-                Write-Host ""
-                Write-Host "  🦞 你的龙虾已就位！" -ForegroundColor Green
-                Write-Host ""
-                $reconfig = (Read-Host "  是否重新配置 OpenClaw? [y/N]").Trim()
-                if ($reconfig -match "^[Yy]") {
-                    Step-Onboard | Out-Null
-                }
-                return
-            }
+        Write-Ok "OpenClaw $existingVer 已安装，无需重复安装"
+        Write-Host "`n  🦞 你的龙虾已就位！`n" -ForegroundColor Green
+        $reconfig = (Read-Host "  是否要重新配置 OpenClaw? [y/N]").Trim()
+        if ($reconfig -match "^[Yy]") {
+            Step-Onboard | Out-Null
         }
-    } else {
-        # 未安装，使用默认路径或自定义路径
-        if ($script:CustomPath) {
-            $env:PNPM_HOME = $script:CustomPath
-            $customBin = "$($script:CustomPath)\bin"
-            if ($env:PATH -notlike "*$customBin*") { $env:PATH = "$customBin;$env:PATH" }
-            if ($env:PATH -notlike "*$script:CustomPath*") { $env:PATH = "$script:CustomPath;$env:PATH" }
-            Write-Info "pnpm 全局路径: $script:CustomPath"
-        }
+        return
     }
 
     if (-not (Step-CheckNode))       { Write-Host "`n按任意键退出..."; $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown"); return }
